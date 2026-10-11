@@ -1,0 +1,162 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-11 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "platform_section",
+  "platform_webhook_url",
+  "webhook_secret",
+  "defaults_section",
+  "default_item_group",
+  "default_customer_group",
+  "column_break_defaults",
+  "default_territory",
+  "gst_section",
+  "cgst_account",
+  "sgst_account",
+  "column_break_gst",
+  "igst_account",
+  "apd_section",
+  "apd_parent_account",
+  "apd_expense_account",
+  "column_break_apd",
+  "bank_account"
+ ],
+ "fields": [
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "0",
+   "description": "When off, every API method refuses and no webhooks are sent."
+  },
+  {
+   "fieldname": "platform_section",
+   "fieldtype": "Section Break",
+   "label": "Platform"
+  },
+  {
+   "fieldname": "platform_webhook_url",
+   "fieldtype": "Data",
+   "label": "Platform Webhook URL",
+   "options": "URL",
+   "description": "e.g. https://api.example.com/v1/webhooks/erpnext"
+  },
+  {
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "description": "Shared with the platform as ERPNEXT_WEBHOOK_SECRET."
+  },
+  {
+   "fieldname": "defaults_section",
+   "fieldtype": "Section Break",
+   "label": "Defaults"
+  },
+  {
+   "fieldname": "default_item_group",
+   "fieldtype": "Link",
+   "label": "Default Item Group",
+   "options": "Item Group"
+  },
+  {
+   "fieldname": "default_customer_group",
+   "fieldtype": "Link",
+   "label": "Default Customer Group",
+   "options": "Customer Group"
+  },
+  {
+   "fieldname": "column_break_defaults",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "default_territory",
+   "fieldtype": "Link",
+   "label": "Default Territory",
+   "options": "Territory"
+  },
+  {
+   "fieldname": "gst_section",
+   "fieldtype": "Section Break",
+   "label": "Output GST Accounts"
+  },
+  {
+   "fieldname": "cgst_account",
+   "fieldtype": "Link",
+   "label": "CGST Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "sgst_account",
+   "fieldtype": "Link",
+   "label": "SGST Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_gst",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "igst_account",
+   "fieldtype": "Link",
+   "label": "IGST Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "apd_section",
+   "fieldtype": "Section Break",
+   "label": "Architect Privilege Discount"
+  },
+  {
+   "fieldname": "apd_parent_account",
+   "fieldtype": "Link",
+   "label": "APD Parent Liability Account",
+   "options": "Account",
+   "description": "Group account; one child account per architect is created under it."
+  },
+  {
+   "fieldname": "apd_expense_account",
+   "fieldtype": "Link",
+   "label": "APD Expense Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_apd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "label": "Payout Bank Account",
+   "options": "Account",
+   "description": "Ledger account credited on APD payouts."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-11 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Commerce Connector",
+ "name": "Commerce Connector Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

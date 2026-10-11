@@ -1,14 +1,19 @@
 app_name = "commerce_connector"
 app_title = "Commerce Connector"
-app_publisher = "sammish"
-app_description = "commerce_connector"
+app_publisher = "Devadaru Softwares"
+app_description = "Syncs the commerce platform with ERPNext: items, customers, dealer-wise Sales Orders and Architect Privilege Discount journals"
 app_email = "sammish.thundiyil@gmail.com"
-app_license = "mit"
+app_license = "Proprietary – Devadaru Softwares"  # noqa: RUF001
 
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["erpnext"]
+
+fixtures = [
+	{"dt": "Custom Field", "filters": [["module", "=", "Commerce Connector"]]},
+	{"dt": "Role", "filters": [["name", "=", "Commerce Connector"]]},
+]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -137,13 +142,10 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Sales Invoice": {"on_submit": "commerce_connector.webhooks.on_submit"},
+	"Delivery Note": {"on_submit": "commerce_connector.webhooks.on_submit"},
+}
 
 # Scheduled Tasks
 # ---------------
@@ -246,4 +248,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
