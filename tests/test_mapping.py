@@ -12,6 +12,10 @@ TAX_ACCOUNTS = {
 	"IGST": "Output Tax IGST - DS",
 }
 
+# ERPNext Item names keyed by platform_product_id. The order line's SKU is frozen at
+# order time and may differ from the current item code (prod-1 was re-SKUed).
+ITEM_CODES = {"prod-1": "TL-600-GLOSS", "prod-2": "TL-300-MT", "prod-3": "TL-SLAB"}
+
 
 def intra_payload():
 	return {
@@ -28,16 +32,18 @@ def intra_payload():
 		"total_weight_kg": "152.500",
 		"items": [
 			{
-				"item_code": "TL-600-GL",
+				"platform_product_id": "prod-1",
+				"sku": "TL-600-GL",
+				"item_name": "Glossy 600x600",
 				"qty": "10",
-				"rate": "1234.50",
+				"rate": "1234.500000",
 				"amount": "12345.00",
 				"weight_kg": "140.000",
 			},
 			{
-				"item_code": "TL-300-MT",
+				"platform_product_id": "prod-2",
 				"qty": "3",
-				"rate": "333.33",
+				"rate": "333.330000",
 				"amount": "999.99",
 				"weight_kg": "12.500",
 			},
@@ -64,7 +70,7 @@ def inter_payload():
 
 def test_intra_sales_order_maps_fields_items_taxes_and_weights():
 	result = mapping.sales_order_from_payload(
-		intra_payload(), customer="CUST-0001", tax_accounts=TAX_ACCOUNTS
+		intra_payload(), customer="CUST-0001", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
 	)
 	doc = result["doc"]
 	assert doc["doctype"] == "Sales Order"
@@ -84,16 +90,17 @@ def test_intra_sales_order_maps_fields_items_taxes_and_weights():
 
 	assert doc["items"] == [
 		{
-			"item_code": "TL-600-GL",
+			"item_code": "TL-600-GLOSS",
 			"qty": Decimal("10"),
-			"rate": Decimal("1234.50"),
+			"rate": Decimal("1234.500000"),
 			"weight_kg": Decimal("140.000"),
 			"delivery_date": "2026-10-11",
+			"description": "Glossy 600x600 (SKU TL-600-GL)",
 		},
 		{
 			"item_code": "TL-300-MT",
 			"qty": Decimal("3"),
-			"rate": Decimal("333.33"),
+			"rate": Decimal("333.330000"),
 			"weight_kg": Decimal("12.500"),
 			"delivery_date": "2026-10-11",
 		},
@@ -121,7 +128,9 @@ def test_intra_sales_order_maps_fields_items_taxes_and_weights():
 
 
 def test_inter_sales_order_uses_igst():
-	doc = mapping.sales_order_from_payload(inter_payload(), customer="C", tax_accounts=TAX_ACCOUNTS)["doc"]
+	doc = mapping.sales_order_from_payload(
+		inter_payload(), customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)["doc"]
 	assert [t["account_head"] for t in doc["taxes"]] == ["Output Tax IGST - DS"]
 	assert doc["taxes"][0]["description"] == "IGST @ 18%"
 	assert doc["taxes"][0]["tax_amount"] == Decimal("2402.00")
@@ -132,7 +141,9 @@ def test_optional_fields_delivery_date_uom_and_place_of_supply():
 	payload["delivery_date"] = "2026-10-20"
 	payload["place_of_supply"] = "32-Kerala"
 	payload["items"][0]["uom"] = "Box"
-	doc = mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS)["doc"]
+	doc = mapping.sales_order_from_payload(
+		payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)["doc"]
 	assert doc["delivery_date"] == "2026-10-20"
 	assert doc["items"][0]["delivery_date"] == "2026-10-20"
 	assert doc["items"][0]["uom"] == "Box"
@@ -145,7 +156,9 @@ def test_zero_tax_order_needs_no_tax_rows():
 	payload["taxes"] = []
 	payload["tax_total"] = "0.00"
 	payload["grand_total"] = "13344.99"
-	result = mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS)
+	result = mapping.sales_order_from_payload(
+		payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)
 	assert result["doc"]["taxes"] == []
 	assert result["grand_total"] == Decimal("13344.99")
 
@@ -157,8 +170,12 @@ def test_zero_tax_order_needs_no_tax_rows():
 		(lambda p: p.update(net_total="13345.00"), "net_total"),
 		(lambda p: p.update(tax_total="2402.01"), "tax_total"),
 		(lambda p: p["items"][0].update(amount="12345.01"), "qty x rate"),
-		(lambda p: p["items"][0].update(rate=1234.5), "rupee string"),
-		(lambda p: p["items"][0].update(rate="1234.5"), "rupee string"),
+		(lambda p: p["items"][0].update(rate="1234.501000"), "qty x rate"),
+		(lambda p: p["items"][0].update(rate=1234.5), "6 decimals"),
+		(lambda p: p["items"][0].update(rate="1234.50"), "6 decimals"),
+		(lambda p: p["items"][0].update(rate="1234.5000000"), "6 decimals"),
+		(lambda p: p["items"][0].pop("platform_product_id"), "platform_product_id"),
+		(lambda p: p["items"][0].update(platform_product_id="prod-unknown"), "not been synced"),
 		(lambda p: p["items"][0].update(qty="0"), "greater than 0"),
 		(lambda p: p["items"][0].update(qty=10.0), "decimal string"),
 		(lambda p: p.update(total_weight_kg="150.000"), "weights"),
@@ -175,27 +192,31 @@ def test_sales_order_contract_violations_raise(mutate, message):
 	payload = intra_payload()
 	mutate(payload)
 	with pytest.raises(MappingError, match=message):
-		mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS)
+		mapping.sales_order_from_payload(
+			payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+		)
 
 
 def test_intra_needs_both_cgst_and_sgst():
 	payload = intra_payload()
 	payload["taxes"] = [{"type": "CGST", "rate": "18", "amount": "2402.00"}]
 	with pytest.raises(MappingError, match="CGST\\+SGST"):
-		mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS)
+		mapping.sales_order_from_payload(
+			payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+		)
 
 
 def test_missing_tax_account_raises():
 	with pytest.raises(MappingError, match="IGST account"):
 		mapping.sales_order_from_payload(
-			inter_payload(), customer="C", tax_accounts={"CGST": "x", "SGST": "y"}
+			inter_payload(), customer="C", tax_accounts={"CGST": "x", "SGST": "y"}, item_codes=ITEM_CODES
 		)
 
 
 def test_mapping_does_not_mutate_payload():
 	payload = intra_payload()
 	before = copy.deepcopy(payload)
-	mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS)
+	mapping.sales_order_from_payload(payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES)
 	assert payload == before
 
 
@@ -467,3 +488,67 @@ def test_erp_event_is_deterministic():
 	assert "grand_total" not in dn["data"]
 	with pytest.raises(MappingError):
 		mapping.erp_event(**{**kwargs, "doctype": "Sales Order"})
+
+
+# --------------------------------------------------- GST-inclusive pricing (R1)
+
+
+def slab_payload():
+	"""GST-inclusive price 1180.00 for 3 units: ex-GST 1000.00, rate 333.333333... per unit."""
+	return {
+		**intra_payload(),
+		"total_weight_kg": "45.000",
+		"items": [
+			{
+				"platform_product_id": "prod-3",
+				"sku": "SLAB-OLD",
+				"qty": "3",
+				"rate": "333.333333",
+				"amount": "1000.00",
+				"weight_kg": "45.000",
+			}
+		],
+		"taxes": [
+			{"type": "CGST", "rate": "9", "amount": "90.00"},
+			{"type": "SGST", "rate": "9", "amount": "90.00"},
+		],
+		"net_total": "1000.00",
+		"tax_total": "180.00",
+		"grand_total": "1180.00",
+	}
+
+
+def test_non_terminating_ex_gst_rate_is_accepted():
+	result = mapping.sales_order_from_payload(
+		slab_payload(), customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)
+	line = result["doc"]["items"][0]
+	assert line["item_code"] == "TL-SLAB"
+	assert line["rate"] == Decimal("333.333333")
+	assert line["qty"] * line["rate"] == Decimal("999.999999")
+	assert mapping.round_paisa(line["qty"] * line["rate"]) == Decimal("1000.00")
+	assert line["description"] == "SKU SLAB-OLD"
+	assert result["net_total"] == Decimal("1000.00")
+	assert result["grand_total"] == Decimal("1180.00")
+
+
+def test_rate_rounding_off_by_a_paisa_is_rejected():
+	payload = slab_payload()
+	payload["items"][0]["rate"] = "333.336667"  # 3 x rate = 1000.010001 -> 1000.01
+	with pytest.raises(MappingError, match=r"\(1000\.01\)"):
+		mapping.sales_order_from_payload(
+			payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+		)
+
+
+def test_round_paisa_is_half_up():
+	assert mapping.round_paisa(Decimal("0.005")) == Decimal("0.01")
+	assert mapping.round_paisa(Decimal("0.015")) == Decimal("0.02")
+	assert mapping.round_paisa(Decimal("0.004999")) == Decimal("0.00")
+
+
+def test_line_product_ids_are_distinct_in_order():
+	payload = intra_payload()
+	payload["items"].append({**payload["items"][0]})
+	assert mapping.line_product_ids(payload) == ["prod-1", "prod-2"]
+	assert mapping.line_product_ids({}) == []

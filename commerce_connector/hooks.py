@@ -12,6 +12,7 @@ required_apps = ["erpnext"]
 
 fixtures = [
 	{"dt": "Custom Field", "filters": [["module", "=", "Commerce Connector"]]},
+	{"dt": "Property Setter", "filters": [["module", "=", "Commerce Connector"]]},
 	{"dt": "Role", "filters": [["name", "=", "Commerce Connector"]]},
 ]
 

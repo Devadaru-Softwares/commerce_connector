@@ -1,0 +1,50 @@
+[
+ {
+  "doctype": "Property Setter",
+  "name": "Sales Order Item-rate-precision",
+  "doc_type": "Sales Order Item",
+  "doctype_or_field": "DocField",
+  "field_name": "rate",
+  "property": "precision",
+  "property_type": "Select",
+  "value": "6",
+  "module": "Commerce Connector",
+  "is_system_generated": 0
+ },
+ {
+  "doctype": "Property Setter",
+  "name": "Sales Order Item-base_rate-precision",
+  "doc_type": "Sales Order Item",
+  "doctype_or_field": "DocField",
+  "field_name": "base_rate",
+  "property": "precision",
+  "property_type": "Select",
+  "value": "6",
+  "module": "Commerce Connector",
+  "is_system_generated": 0
+ },
+ {
+  "doctype": "Property Setter",
+  "name": "Sales Order Item-net_rate-precision",
+  "doc_type": "Sales Order Item",
+  "doctype_or_field": "DocField",
+  "field_name": "net_rate",
+  "property": "precision",
+  "property_type": "Select",
+  "value": "6",
+  "module": "Commerce Connector",
+  "is_system_generated": 0
+ },
+ {
+  "doctype": "Property Setter",
+  "name": "Sales Order Item-base_net_rate-precision",
+  "doc_type": "Sales Order Item",
+  "doctype_or_field": "DocField",
+  "field_name": "base_net_rate",
+  "property": "precision",
+  "property_type": "Select",
+  "value": "6",
+  "module": "Commerce Connector",
+  "is_system_generated": 0
+ }
+]

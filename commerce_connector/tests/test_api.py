@@ -114,16 +114,18 @@ class TestCommerceConnectorApi(TestCase):
 			"total_weight_kg": "152.500",
 			"items": [
 				{
-					"item_code": "CC-TEST-1",
+					"platform_product_id": "test-product-1",
+					"sku": "CC-TEST-1",
 					"qty": "10",
-					"rate": "1234.50",
+					"rate": "1234.500000",
 					"amount": "12345.00",
 					"weight_kg": "140.000",
 				},
 				{
-					"item_code": "CC-TEST-2",
+					"platform_product_id": "test-product-2",
+					"sku": "CC-TEST-2",
 					"qty": "3",
-					"rate": "333.33",
+					"rate": "333.330000",
 					"amount": "999.99",
 					"weight_kg": "12.500",
 				},
@@ -177,6 +179,38 @@ class TestCommerceConnectorApi(TestCase):
 		cancelled = api.cancel_sales_order(PART_ID)
 		self.assertEqual(cancelled["status"], "cancelled")
 		self.assertEqual(api.cancel_sales_order(PART_ID)["status"], "cancelled")
+
+	def test_gst_inclusive_rate_with_six_decimals(self):
+		self._item("CC-TEST-1", "test-product-1")
+		self._customer()
+		payload = self._order_payload()
+		payload.update(
+			platform_part_id="test-part-six-dp",
+			total_weight_kg="42.000",
+			items=[
+				{
+					"platform_product_id": "test-product-1",
+					"sku": "CC-TEST-1-OLD",
+					"qty": "3",
+					"rate": "333.333333",
+					"amount": "1000.00",
+					"weight_kg": "42.000",
+				}
+			],
+			taxes=[
+				{"type": "CGST", "rate": "9", "amount": "90.00"},
+				{"type": "SGST", "rate": "9", "amount": "90.00"},
+			],
+			net_total="1000.00",
+			tax_total="180.00",
+			grand_total="1180.00",
+		)
+		created = api.create_sales_order(payload)
+		self.assertEqual(created["grand_total"], "1180.00")
+		so = frappe.get_doc("Sales Order", created["name"])
+		self.assertEqual(so.items[0].item_code, "CC-TEST-1")
+		self.assertAlmostEqual(so.items[0].rate, 333.333333, places=6)
+		self.assertEqual(so.net_total, 1000.0)
 
 	def test_sales_order_total_mismatch_is_rejected(self):
 		payload = self._order_payload()

@@ -8,11 +8,13 @@ exactly two decimal places ("1234.56") and is handled as `Decimal` throughout.
 import re
 import uuid
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 PAISA = Decimal("0.01")
 MONEY_RE = re.compile(r"^\d+\.\d{2}$")
 QUANTITY_RE = re.compile(r"^\d+(\.\d+)?$")
+RATE_RE = re.compile(r"^\d+\.\d{6}$")
+RATE_PRECISION = 6
 
 SUPPLY_TAX_TYPES = {
 	"intra": {"CGST", "SGST"},
@@ -63,6 +65,17 @@ def quantity(value, field: str) -> Decimal:
 		return Decimal(value)
 	except InvalidOperation:
 		raise MappingError(f"{field} must be a non-negative decimal string")
+
+
+def line_rate(value, field: str) -> Decimal:
+	"""Parse a line rate: a string with exactly 6 decimals (amount / qty, rounded)."""
+	if not isinstance(value, str) or not RATE_RE.match(value):
+		raise MappingError(f'{field} must be a string with 6 decimals, e.g. "333.333333"')
+	return Decimal(value)
+
+
+def round_paisa(value: Decimal) -> Decimal:
+	return value.quantize(PAISA, rounding=ROUND_HALF_UP)
 
 
 def required(payload: dict, key: str, label: str | None = None) -> str:
@@ -197,12 +210,16 @@ def customer_from_payload(
 # --------------------------------------------------------------- sales order
 
 
-def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict) -> dict:
+def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict, item_codes: dict) -> dict:
 	"""Map `create_sales_order` payload to a Sales Order dict.
 
 	Returns {"doc": <Sales Order dict>, "net_total", "tax_total", "grand_total"} with
 	Decimal totals. Raises MappingError unless lines and taxes sum exactly to the
 	payload totals and the tax rows match the supply type.
+
+	`item_codes` maps platform_product_id -> ERPNext Item name. Lines are resolved by
+	product id; the SKU and name on a line are frozen at order time and only go into
+	the line description.
 	"""
 	part_id = required(payload, "platform_part_id")
 	supply_type = required(payload, "supply_type")
@@ -227,20 +244,30 @@ def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict
 		qty = quantity(row.get("qty"), f"{label}.qty")
 		if qty <= 0:
 			raise MappingError(f"{label}.qty must be greater than 0")
-		rate = money(row.get("rate"), f"{label}.rate")
+		rate = line_rate(row.get("rate"), f"{label}.rate")
 		amount = money(row.get("amount"), f"{label}.amount")
-		if qty * rate != amount:
-			raise MappingError(f"{label}.amount must equal qty x rate exactly")
+		if round_paisa(qty * rate) != amount:
+			raise MappingError(
+				f"{label}.amount {as_rupees(amount)} does not equal qty x rate rounded to the paisa "
+				f"({as_rupees(round_paisa(qty * rate))})"
+			)
+		product_id = required(row, "platform_product_id", f"{label}.platform_product_id")
+		item_code = item_codes.get(product_id)
+		if not item_code:
+			raise MappingError(f"{label}: item for product {product_id} has not been synced yet")
 		weight = quantity(row.get("weight_kg", "0"), f"{label}.weight_kg")
 		net_sum += amount
 		weight_sum += weight
 		item = {
-			"item_code": required(row, "item_code", f"{label}.item_code"),
+			"item_code": item_code,
 			"qty": qty,
 			"rate": rate,
 			"weight_kg": weight,
 			"delivery_date": delivery_date,
 		}
+		description = line_description(optional(row, "item_name"), optional(row, "sku"))
+		if description:
+			item["description"] = description
 		uom = optional(row, "uom")
 		if uom:
 			item["uom"] = uom
@@ -318,6 +345,25 @@ def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict
 	if place_of_supply:
 		doc["place_of_supply"] = place_of_supply
 	return {"doc": doc, "net_total": net_total, "tax_total": tax_total, "grand_total": grand_total}
+
+
+def line_description(item_name: str | None, sku: str | None) -> str | None:
+	"""Frozen name and SKU from the order, kept on the line for reference only."""
+	if item_name and sku:
+		return f"{item_name} (SKU {sku})"
+	if sku:
+		return f"SKU {sku}"
+	return item_name
+
+
+def line_product_ids(payload: dict) -> list[str]:
+	"""Distinct platform product ids on the order lines, for the item lookup."""
+	ids = []
+	for row in payload.get("items") or []:
+		product_id = optional(row, "platform_product_id") if isinstance(row, dict) else None
+		if product_id and product_id not in ids:
+			ids.append(product_id)
+	return ids
 
 
 def status_update(status: str, invoice_no: str | None = None, invoice_date: str | None = None) -> dict:

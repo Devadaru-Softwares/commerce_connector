@@ -82,8 +82,10 @@ def upsert_item(payload):
 	fields = _run(mapping.item_from_payload, data, default_item_group=settings.default_item_group)
 	fields = _to_frappe(fields)
 
+	# Items are keyed by platform_product_id; the SKU can change on the platform and
+	# item_code is never renamed. An existing unlinked Item with the same code is adopted.
 	name = _find("Item", {"platform_product_id": fields["platform_product_id"]}) or _find(
-		"Item", {"item_code": fields["item_code"]}
+		"Item", {"item_code": fields["item_code"], "platform_product_id": ["in", ["", None]]}
 	)
 	if name:
 		doc = frappe.get_doc("Item", name)
@@ -181,7 +183,22 @@ def create_sales_order(payload):
 		"SGST": settings.sgst_account,
 		"IGST": settings.igst_account,
 	}
-	plan = _run(mapping.sales_order_from_payload, data, customer=customer, tax_accounts=tax_accounts)
+	product_ids = mapping.line_product_ids(data)
+	item_codes = {
+		row.platform_product_id: row.name
+		for row in frappe.get_all(
+			"Item",
+			filters={"platform_product_id": ["in", product_ids or [""]]},
+			fields=["name", "platform_product_id"],
+		)
+	}
+	plan = _run(
+		mapping.sales_order_from_payload,
+		data,
+		customer=customer,
+		tax_accounts=tax_accounts,
+		item_codes=item_codes,
+	)
 
 	so = frappe.get_doc(_to_frappe(_known_fields("Sales Order", plan["doc"])))
 	for address_type, field in (("Billing", "customer_address"), ("Shipping", "shipping_address_name")):

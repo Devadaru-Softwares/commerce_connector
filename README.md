@@ -63,7 +63,10 @@ All methods are idempotent by platform id. A repeat call returns the existing do
 Conventions:
 - Money is a rupee string with exactly 2 decimals, e.g. `"1234.56"`. Floats and other formats are
   rejected.
-- Quantities, weights and rates are decimal strings, e.g. `"10"` or `"14.000"`.
+- Quantities and weights are decimal strings, e.g. `"10"` or `"14.000"`.
+- A Sales Order line `rate` is a string with exactly 6 decimals (`amount / qty`, rounded),
+  e.g. `"333.333333"`. The installer sets the precision of `Sales Order Item` `rate`, `net_rate`,
+  `base_rate` and `base_net_rate` to 6 with Property Setter fixtures.
 - Dates are `YYYY-MM-DD`.
 
 #### `upsert_item(payload)`
@@ -83,7 +86,8 @@ Conventions:
 }}
 ```
 
-The Item is looked up by `platform_product_id`, then by `item_code`. Items are created as non-stock,
+The Item is looked up by `platform_product_id`. If none is linked, an existing Item with the same
+`item_code` and no platform id is adopted. A later SKU change does not rename the Item. Items are created as non-stock,
 because stock stays on the platform. `item_code`, `item_group`, `stock_uom` and `is_stock_item` are
 set only on create. A missing UOM is created.
 
@@ -122,25 +126,33 @@ The platform sends one call per dealer part.
   "place_of_supply": "32-Kerala",
   "total_weight_kg": "152.500",
   "items": [
-    {"item_code": "TL-600-GL", "qty": "10", "rate": "1234.50", "amount": "12345.00", "weight_kg": "140.000", "uom": "Box"},
-    {"item_code": "TL-300-MT", "qty": "3", "rate": "333.33", "amount": "999.99", "weight_kg": "12.500"}
+    {"platform_product_id": "6f1c…", "sku": "TL-600-GL", "item_name": "Glossy 600x600",
+     "qty": "10", "rate": "1234.500000", "amount": "12345.00", "weight_kg": "140.000", "uom": "Box"},
+    {"platform_product_id": "9a2d…", "sku": "TL-300-MT", "item_name": "Matt 300x300",
+     "qty": "3", "rate": "333.333333", "amount": "1000.00", "weight_kg": "12.500"}
   ],
   "taxes": [
-    {"type": "CGST", "rate": "9", "amount": "1201.00"},
-    {"type": "SGST", "rate": "9", "amount": "1201.00"}
+    {"type": "CGST", "rate": "9", "amount": "1201.05"},
+    {"type": "SGST", "rate": "9", "amount": "1201.05"}
   ],
-  "net_total": "13344.99", "tax_total": "2402.00", "grand_total": "15746.99"
+  "net_total": "13345.00", "tax_total": "2402.10", "grand_total": "15747.10"
 }}
 ```
 
 Rules:
 - `supply_type` is `intra` (CGST and SGST rows) or `inter` (one IGST row). Tax rows may be empty only
   when `tax_total` is `"0.00"`.
-- `items[].amount` must equal `qty × rate` exactly. `items[].weight_kg` is the line's total weight.
+- Platform prices include GST, so the ex-GST line `amount` (exact, 2 decimals) is not always
+  `qty ×` a 2-decimal rate. A line is accepted when `round(rate × qty, 2)` (half up) equals `amount`.
+  For example, qty `3` and amount `"1000.00"` give rate `"333.333333"`.
+- Lines are matched to Items by `items[].platform_product_id`, never by SKU. `sku` and `item_name`
+  are frozen at order time. They are optional and only go into the line description, as
+  `"{item_name} (SKU {sku})"`.
+- `items[].weight_kg` is the line's total weight.
 - The amounts must sum exactly: lines to `net_total`, taxes to `tax_total`, `net_total + tax_total`
   to `grand_total`, and line weights to `total_weight_kg`.
 - `delivery_date`, `place_of_supply`, `dealer_gstin` and `items[].uom` are optional.
-- The customer and the items must already be synced.
+- The customer and every line's product must already be synced.
 
 The Sales Order is inserted with `ignore_pricing_rule` and `disable_rounded_total` set. Tax rows use
 charge type **Actual** with the payload amounts. The order is then submitted. Net total, tax total and
@@ -242,6 +254,8 @@ X-Commerce-Signature: <lowercase hex HMAC-SHA256 of the raw body, keyed with Web
 | Sales Order Item | `weight_kg` |
 | Journal Entry | `platform_ref` |
 | Account | `platform_architect_id` |
+
+Property Setters: precision 6 on `Sales Order Item` `rate`, `net_rate`, `base_rate` and `base_net_rate`.
 
 ### Development
 
