@@ -11,20 +11,34 @@ import frappe
 from frappe import _
 
 from commerce_connector import mapping
-from commerce_connector.mapping import MappingError
+from commerce_connector.mapping import ConfigError, MappingError
 
 API_ROLES = ("Commerce Connector", "System Manager")
 SETTINGS = "Commerce Connector Settings"
 
 
+class ConnectorUnavailable(frappe.ValidationError):
+	"""Connector disabled or not configured. HTTP 503 so the platform retries later."""
+
+	http_status_code = 503
+
+
 # ------------------------------------------------------------------- helpers
+
+
+def _unavailable(message: str):
+	frappe.throw(message, ConnectorUnavailable, title=_("Commerce Connector unavailable"))
 
 
 def _guard():
 	frappe.only_for(API_ROLES)
-	settings = frappe.get_cached_doc(SETTINGS)
-	if not settings.enabled:
-		frappe.throw(_("Commerce Connector is disabled"), frappe.ValidationError)
+	try:
+		settings = frappe.get_cached_doc(SETTINGS)
+	except frappe.DoesNotExistError:
+		settings = None
+	problem = mapping.settings_problem(settings.as_dict() if settings else {})
+	if problem:
+		_unavailable(problem)
 	return settings
 
 
@@ -38,6 +52,8 @@ def _parse(payload) -> dict:
 def _run(fn, *args, **kwargs):
 	try:
 		return fn(*args, **kwargs)
+	except ConfigError as e:
+		_unavailable(str(e))
 	except MappingError as e:
 		frappe.throw(str(e), frappe.ValidationError)
 
@@ -67,6 +83,14 @@ def _result(doc, created: bool, **extra) -> dict:
 	return {"name": doc.name, "doctype": doc.doctype, "docstatus": doc.docstatus, "created": created, **extra}
 
 
+def _ensure_hsn(code: str | None):
+	"""India Compliance links Item.gst_hsn_code to GST HSN Code; create the code if missing."""
+	if not code or not frappe.get_meta("Item").has_field("gst_hsn_code"):
+		return
+	if frappe.db.exists("DocType", "GST HSN Code") and not frappe.db.exists("GST HSN Code", code):
+		frappe.get_doc({"doctype": "GST HSN Code", "hsn_code": code}).insert(ignore_permissions=True)
+
+
 def _ensure_uom(uom: str):
 	if uom and not frappe.db.exists("UOM", uom):
 		frappe.get_doc({"doctype": "UOM", "uom_name": uom}).insert(ignore_permissions=True)
@@ -89,11 +113,13 @@ def upsert_item(payload):
 	)
 	if name:
 		doc = frappe.get_doc("Item", name)
+		_ensure_hsn(fields.get("gst_hsn_code"))
 		updates = {k: v for k, v in fields.items() if k not in mapping.ITEM_CREATE_ONLY_FIELDS}
 		doc.update(_known_fields("Item", updates))
 		doc.save(ignore_permissions=True)
 		return _result(doc, False, item_code=doc.item_code)
 
+	_ensure_hsn(fields.get("gst_hsn_code"))
 	_ensure_uom(fields["stock_uom"])
 	doc = frappe.get_doc({"doctype": "Item", **_known_fields("Item", fields)})
 	doc.insert(ignore_permissions=True)
@@ -118,8 +144,9 @@ def upsert_customer(payload):
 	name = _find("Customer", {"platform_user_id": fields["platform_user_id"]})
 	if name:
 		doc = frappe.get_doc("Customer", name)
-		# mobile_no on an existing customer belongs to its primary contact; do not overwrite.
-		updates = {k: v for k, v in fields.items() if k not in ("mobile_no", "customer_group", "territory")}
+		# mobile_no and email_id on an existing customer belong to its primary contact; do not overwrite.
+		skip = ("mobile_no", "email_id", "customer_group", "territory")
+		updates = {k: v for k, v in fields.items() if k not in skip}
 		doc.update(_known_fields("Customer", updates))
 		doc.save(ignore_permissions=True)
 		created = False
@@ -316,7 +343,7 @@ def _ensure_apd_account(settings, entry: dict) -> str:
 
 	parent = settings.apd_parent_account
 	if not parent:
-		frappe.throw(_("APD parent liability account is not set in Commerce Connector Settings"))
+		_unavailable(_("APD parent liability account is not set in Commerce Connector Settings"))
 	if frappe.db.get_value("Account", parent, "company") != company:
 		frappe.throw(_("APD parent account belongs to another company"))
 	doc = frappe.get_doc(

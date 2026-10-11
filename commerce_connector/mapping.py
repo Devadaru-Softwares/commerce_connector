@@ -39,8 +39,27 @@ ERP_EVENTS = {
 _EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "commerce_connector/erp-events")
 
 
+ITEM_PLATFORM_STATUSES = ("draft", "live", "archived")
+HSN_RE = re.compile(r"^(\d{4}|\d{6}|\d{8})$")
+
+
 class MappingError(ValueError):
-	"""Raised when a payload breaks the contract. The message is safe to return."""
+	"""Raised when a payload breaks the contract (HTTP 417, not retryable)."""
+
+
+class ConfigError(Exception):
+	"""Raised when the connector is disabled or a setting is missing (HTTP 503, retryable)."""
+
+	http_status_code = 503
+
+
+def settings_problem(settings: dict) -> str | None:
+	"""Why the connector cannot take calls right now, or None when it can."""
+	if not settings:
+		return "Commerce Connector Settings are missing"
+	if not settings.get("enabled"):
+		return "Commerce Connector is disabled"
+	return None
 
 
 # ---------------------------------------------------------------- primitives
@@ -130,11 +149,19 @@ def item_from_payload(payload: dict, *, default_item_group: str | None = None) -
 	item_code = required(payload, "item_code")
 	item_group = optional(payload, "item_group") or default_item_group
 	if not item_group:
-		raise MappingError("item_group is required (payload or Commerce Connector Settings)")
+		raise ConfigError("Default Item Group is not set in Commerce Connector Settings")
 	gst_rate = quantity(payload.get("gst_rate", "0"), "gst_rate")
 	if gst_rate > 100:
 		raise MappingError("gst_rate must be between 0 and 100")
 	item_name = required(payload, "item_name")[:140]
+	platform_status = (optional(payload, "platform_status") or "live").lower()
+	if platform_status not in ITEM_PLATFORM_STATUSES:
+		raise MappingError(f"platform_status must be one of: {', '.join(ITEM_PLATFORM_STATUSES)}")
+	hsn = optional(payload, "gst_hsn_code")
+	if hsn and not HSN_RE.match(hsn):
+		raise MappingError("gst_hsn_code must be 4, 6 or 8 digits")
+	# Items are never disabled: a disabled Item blocks Sales Orders (end of life check).
+	# A legacy `disabled` flag in the payload is ignored.
 	fields = {
 		"item_code": item_code,
 		"item_name": item_name,
@@ -146,8 +173,10 @@ def item_from_payload(payload: dict, *, default_item_group: str | None = None) -
 		"weight_uom": optional(payload, "weight_uom") or "Kg",
 		"platform_product_id": required(payload, "platform_product_id"),
 		"platform_gst_rate": gst_rate,
-		"disabled": 1 if payload.get("disabled") else 0,
+		"platform_status": platform_status,
 	}
+	if hsn:
+		fields["gst_hsn_code"] = hsn
 	return fields
 
 
@@ -168,6 +197,9 @@ def customer_from_payload(
 		gstin = gstin.upper()
 		if len(gstin) != 15:
 			raise MappingError("gstin must be 15 characters")
+	email_id = optional(payload, "email_id")
+	if email_id and ("@" not in email_id or " " in email_id):
+		raise MappingError("email_id is not a valid email address")
 	customer = {
 		"customer_name": customer_name,
 		"customer_type": "Company" if gstin else "Individual",
@@ -175,6 +207,7 @@ def customer_from_payload(
 		"territory": optional(payload, "territory") or default_territory,
 		"platform_user_id": platform_user_id,
 		"mobile_no": optional(payload, "phone"),
+		"email_id": email_id,
 		"gstin": gstin,
 		"gst_category": "Registered Regular" if gstin else "Unregistered",
 	}
@@ -265,7 +298,9 @@ def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict
 			"weight_kg": weight,
 			"delivery_date": delivery_date,
 		}
-		description = line_description(optional(row, "item_name"), optional(row, "sku"))
+		description = line_description(
+			optional(row, "item_name"), optional(row, "sku") or optional(row, "item_code")
+		)
 		if description:
 			item["description"] = description
 		uom = optional(row, "uom")
@@ -283,34 +318,43 @@ def sales_order_from_payload(payload: dict, *, customer: str, tax_accounts: dict
 
 	taxes = []
 	tax_sum = Decimal("0.00")
-	types_seen = set()
+	rows_seen = set()
+	rates_by_type = {}
 	for index, row in enumerate(payload.get("taxes") or []):
 		label = f"taxes[{index}]"
 		tax_type = required(row, "type", f"{label}.type").upper()
 		if tax_type not in SUPPLY_TAX_TYPES[supply_type]:
 			raise MappingError(f"{label}.type {tax_type} is not allowed for {supply_type}-state supply")
-		if tax_type in types_seen:
-			raise MappingError(f"{label}.type {tax_type} is repeated")
-		types_seen.add(tax_type)
+		if row.get("rate") is None:
+			raise MappingError(f"{label}.rate is required")
+		rate = quantity(row.get("rate"), f"{label}.rate").normalize()
+		if rate > 100:
+			raise MappingError(f"{label}.rate must be between 0 and 100")
+		# A part can mix GST slabs (e.g. CGST 6 and CGST 9): rows are unique by (type, rate).
+		if (tax_type, rate) in rows_seen:
+			raise MappingError(f"{label}: {tax_type} {rate:f}% is repeated")
+		rows_seen.add((tax_type, rate))
+		rates_by_type.setdefault(tax_type, set()).add(rate)
 		account = tax_accounts.get(tax_type)
 		if not account:
-			raise MappingError(f"no {tax_type} account set in Commerce Connector Settings")
-		rate = quantity(row.get("rate", "0"), f"{label}.rate")
+			raise ConfigError(f"{tax_type} account is not set in Commerce Connector Settings")
 		amount = money(row.get("amount"), f"{label}.amount")
 		tax_sum += amount
 		taxes.append(
 			{
 				"charge_type": "Actual",
 				"account_head": account,
-				"description": f"{tax_type} @ {rate.normalize():f}%",
+				"description": f"{tax_type} {rate:f}%",
 				"tax_amount": amount,
 			}
 		)
 	if tax_sum != tax_total:
 		raise MappingError(f"tax rows sum to {as_rupees(tax_sum)} but tax_total is {as_rupees(tax_total)}")
-	if tax_total > 0 and types_seen != SUPPLY_TAX_TYPES[supply_type]:
+	if tax_total > 0 and set(rates_by_type) != SUPPLY_TAX_TYPES[supply_type]:
 		expected = "+".join(sorted(SUPPLY_TAX_TYPES[supply_type]))
 		raise MappingError(f"{supply_type}-state supply needs {expected} tax rows")
+	if supply_type == "intra" and rates_by_type.get("CGST", set()) != rates_by_type.get("SGST", set()):
+		raise MappingError("intra-state CGST and SGST rows must come in pairs with the same rates")
 	if net_total + tax_total != grand_total:
 		raise MappingError(
 			f"net_total + tax_total is {as_rupees(net_total + tax_total)} but grand_total is {as_rupees(grand_total)}"
@@ -451,7 +495,7 @@ def apd_journal(
 	reference = entry.get("platform_order_number")
 	if action in ("accrue", "void"):
 		if not expense_account:
-			raise MappingError("APD expense account is not set in Commerce Connector Settings")
+			raise ConfigError("APD expense account is not set in Commerce Connector Settings")
 		if action == "accrue":
 			rows = [row(expense_account, amount, zero, True), row(apd_account, zero, amount)]
 			remark = "Architect Privilege Discount accrued"
@@ -461,7 +505,7 @@ def apd_journal(
 		voucher_type = "Journal Entry"
 	else:
 		if not bank_account:
-			raise MappingError("bank account is not set in Commerce Connector Settings")
+			raise ConfigError("bank account is not set in Commerce Connector Settings")
 		rows = [row(apd_account, amount, zero), row(bank_account, zero, amount)]
 		remark = "Architect Privilege Discount paid out"
 		voucher_type = "Bank Entry"
@@ -484,6 +528,18 @@ def apd_journal(
 
 
 # ------------------------------------------------------------------ webhooks
+
+
+def should_send_event(doctype: str, *, is_return=False, grand_total=None) -> bool:
+	"""Return Sales Invoices (credit notes) are not sent to the platform."""
+	if doctype not in ERP_EVENTS:
+		return False
+	if doctype == "Sales Invoice":
+		if is_return:
+			return False
+		if grand_total is not None and Decimal(str(grand_total)) < 0:
+			return False
+	return True
 
 
 def erp_event(

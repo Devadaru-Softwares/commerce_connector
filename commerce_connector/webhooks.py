@@ -28,6 +28,11 @@ def on_submit(doc, method=None):
 	link_field = LINK_FIELDS.get(doc.doctype)
 	if not link_field:
 		return
+	# Return Sales Invoices (credit notes) are not ERP references for the platform.
+	if not mapping.should_send_event(
+		doc.doctype, is_return=doc.get("is_return"), grand_total=doc.get("grand_total")
+	):
+		return
 
 	sales_orders = sorted({row.get(link_field) for row in doc.get("items") or [] if row.get(link_field)})
 	for so_name in sales_orders:

@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from commerce_connector import mapping
-from commerce_connector.mapping import MappingError
+from commerce_connector.mapping import ConfigError, MappingError
 
 TAX_ACCOUNTS = {
 	"CGST": "Output Tax CGST - DS",
@@ -109,13 +109,13 @@ def test_intra_sales_order_maps_fields_items_taxes_and_weights():
 		{
 			"charge_type": "Actual",
 			"account_head": "Output Tax CGST - DS",
-			"description": "CGST @ 9%",
+			"description": "CGST 9%",
 			"tax_amount": Decimal("1201.00"),
 		},
 		{
 			"charge_type": "Actual",
 			"account_head": "Output Tax SGST - DS",
-			"description": "SGST @ 9%",
+			"description": "SGST 9%",
 			"tax_amount": Decimal("1201.00"),
 		},
 	]
@@ -132,7 +132,7 @@ def test_inter_sales_order_uses_igst():
 		inter_payload(), customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
 	)["doc"]
 	assert [t["account_head"] for t in doc["taxes"]] == ["Output Tax IGST - DS"]
-	assert doc["taxes"][0]["description"] == "IGST @ 18%"
+	assert doc["taxes"][0]["description"] == "IGST 18%"
 	assert doc["taxes"][0]["tax_amount"] == Decimal("2402.00")
 
 
@@ -182,6 +182,8 @@ def test_zero_tax_order_needs_no_tax_rows():
 		(lambda p: p.update(supply_type="export"), "supply_type"),
 		(lambda p: p["taxes"][0].update(type="IGST"), "not allowed"),
 		(lambda p: p["taxes"][1].update(type="CGST"), "repeated"),
+		(lambda p: p["taxes"][0].pop("rate"), "rate is required"),
+		(lambda p: p["taxes"][1].update(rate="6"), "pairs"),
 		(lambda p: p.update(items=[]), "items"),
 		(lambda p: p.update(transaction_date="11/10/2026"), "transaction_date"),
 		(lambda p: p.pop("platform_part_id"), "platform_part_id"),
@@ -206,8 +208,8 @@ def test_intra_needs_both_cgst_and_sgst():
 		)
 
 
-def test_missing_tax_account_raises():
-	with pytest.raises(MappingError, match="IGST account"):
+def test_missing_tax_account_is_a_config_error():
+	with pytest.raises(ConfigError, match="IGST account"):
 		mapping.sales_order_from_payload(
 			inter_payload(), customer="C", tax_accounts={"CGST": "x", "SGST": "y"}, item_codes=ITEM_CODES
 		)
@@ -268,21 +270,33 @@ def test_item_mapping():
 		"weight_uom": "Kg",
 		"platform_product_id": "p-1",
 		"platform_gst_rate": Decimal("18"),
-		"disabled": 0,
+		"platform_status": "live",
 	}
+	assert "disabled" not in fields
 	assert set(mapping.ITEM_CREATE_ONLY_FIELDS) <= set(fields)
 
 
-def test_item_archived_is_disabled_and_group_required():
+def test_archived_item_is_never_disabled_and_group_required():
 	base = {
 		"platform_product_id": "p",
 		"item_code": "S",
 		"item_name": "N",
 		"stock_uom": "Box",
-		"disabled": True,
+		"platform_status": "archived",
+		"disabled": True,  # legacy flag: ignored
 	}
-	assert mapping.item_from_payload(base, default_item_group="G")["disabled"] == 1
-	with pytest.raises(MappingError, match="item_group"):
+	fields = mapping.item_from_payload(base, default_item_group="G")
+	assert fields["platform_status"] == "archived"
+	assert "disabled" not in fields
+	assert (
+		mapping.item_from_payload({**base, "platform_status": "Draft"}, default_item_group="G")[
+			"platform_status"
+		]
+		== "draft"
+	)
+	with pytest.raises(MappingError, match="platform_status"):
+		mapping.item_from_payload({**base, "platform_status": "deleted"}, default_item_group="G")
+	with pytest.raises(ConfigError, match="Item Group"):
 		mapping.item_from_payload(base)
 	with pytest.raises(MappingError, match="gst_rate"):
 		mapping.item_from_payload({**base, "gst_rate": "180"}, default_item_group="G")
@@ -448,10 +462,10 @@ def test_apd_contract_violations(payload, message):
 
 def test_apd_missing_settings_accounts():
 	entry = mapping.apd_entry(apd_payload())
-	with pytest.raises(MappingError, match="expense account"):
+	with pytest.raises(ConfigError, match="expense account"):
 		mapping.apd_journal(entry, apd_account="A")
 	payout = mapping.apd_entry(apd_payload("payout", platform_payout_id="p", utr="U"))
-	with pytest.raises(MappingError, match="bank account"):
+	with pytest.raises(ConfigError, match="bank account"):
 		mapping.apd_journal(payout, apd_account="A")
 
 
@@ -552,3 +566,142 @@ def test_line_product_ids_are_distinct_in_order():
 	payload["items"].append({**payload["items"][0]})
 	assert mapping.line_product_ids(payload) == ["prod-1", "prod-2"]
 	assert mapping.line_product_ids({}) == []
+
+
+# ------------------------------------------------------------- fix wave C1-C7
+
+
+def mixed_intra_payload():
+	"""One part with an 18% line and a 12% line: CGST/SGST at 9% and at 6%."""
+	return {
+		**intra_payload(),
+		"total_weight_kg": "50.000",
+		"items": [
+			{
+				"platform_product_id": "prod-1",
+				"sku": "TL-600-GL",
+				"qty": "2",
+				"rate": "500.000000",
+				"amount": "1000.00",
+				"weight_kg": "30.000",
+			},
+			{
+				"platform_product_id": "prod-2",
+				"item_code": "TL-300-MT",
+				"qty": "4",
+				"rate": "125.000000",
+				"amount": "500.00",
+				"weight_kg": "20.000",
+			},
+		],
+		"taxes": [
+			{"type": "CGST", "rate": "9", "amount": "90.00"},
+			{"type": "SGST", "rate": "9", "amount": "90.00"},
+			{"type": "CGST", "rate": "6", "amount": "30.00"},
+			{"type": "SGST", "rate": "6", "amount": "30.00"},
+		],
+		"net_total": "1500.00",
+		"tax_total": "240.00",
+		"grand_total": "1740.00",
+	}
+
+
+def test_c1_mixed_rates_intra():
+	result = mapping.sales_order_from_payload(
+		mixed_intra_payload(), customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)
+	taxes = result["doc"]["taxes"]
+	assert [(t["account_head"], t["description"], t["tax_amount"]) for t in taxes] == [
+		("Output Tax CGST - DS", "CGST 9%", Decimal("90.00")),
+		("Output Tax SGST - DS", "SGST 9%", Decimal("90.00")),
+		("Output Tax CGST - DS", "CGST 6%", Decimal("30.00")),
+		("Output Tax SGST - DS", "SGST 6%", Decimal("30.00")),
+	]
+	assert all(t["charge_type"] == "Actual" for t in taxes)
+	assert result["grand_total"] == Decimal("1740.00")
+
+
+def test_c1_mixed_rates_inter():
+	payload = mixed_intra_payload()
+	payload["supply_type"] = "inter"
+	payload["taxes"] = [
+		{"type": "IGST", "rate": "18", "amount": "180.00"},
+		{"type": "IGST", "rate": "12", "amount": "60.00"},
+	]
+	result = mapping.sales_order_from_payload(
+		payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)
+	assert [(t["description"], t["tax_amount"]) for t in result["doc"]["taxes"]] == [
+		("IGST 18%", Decimal("180.00")),
+		("IGST 12%", Decimal("60.00")),
+	]
+	assert result["tax_total"] == Decimal("240.00")
+
+
+def test_c1_same_type_and_rate_repeated_is_rejected():
+	payload = mixed_intra_payload()
+	payload["taxes"][2]["rate"] = "9.00"  # same rate as row 0 once normalised
+	with pytest.raises(MappingError, match="CGST 9% is repeated"):
+		mapping.sales_order_from_payload(
+			payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+		)
+
+
+def test_c1_mixed_totals_still_exact():
+	payload = mixed_intra_payload()
+	payload["taxes"][3]["amount"] = "30.01"
+	with pytest.raises(MappingError, match="tax_total"):
+		mapping.sales_order_from_payload(
+			payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+		)
+
+
+def test_c2_hsn_code_maps_to_item():
+	base = {"platform_product_id": "p", "item_code": "S", "item_name": "N", "stock_uom": "Box"}
+	fields = mapping.item_from_payload({**base, "gst_hsn_code": "69072100"}, default_item_group="G")
+	assert fields["gst_hsn_code"] == "69072100"
+	assert "gst_hsn_code" not in mapping.item_from_payload(base, default_item_group="G")
+	with pytest.raises(MappingError, match="gst_hsn_code"):
+		mapping.item_from_payload({**base, "gst_hsn_code": "69A"}, default_item_group="G")
+
+
+def test_c3_line_description_reads_sku_then_item_code():
+	doc = mapping.sales_order_from_payload(
+		mixed_intra_payload(), customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)["doc"]
+	assert doc["items"][0]["description"] == "SKU TL-600-GL"
+	assert doc["items"][1]["description"] == "SKU TL-300-MT"
+	payload = mixed_intra_payload()
+	payload["items"][0]["item_code"] = "IGNORED"
+	payload["items"][0]["item_name"] = "Glossy"
+	line = mapping.sales_order_from_payload(
+		payload, customer="C", tax_accounts=TAX_ACCOUNTS, item_codes=ITEM_CODES
+	)["doc"]["items"][0]
+	assert line["description"] == "Glossy (SKU TL-600-GL)"
+	assert line["item_code"] == "TL-600-GLOSS"
+
+
+def test_c4_customer_email():
+	result = mapping.customer_from_payload(
+		{"platform_user_id": "u", "customer_name": "A", "email_id": "a@example.com"}
+	)
+	assert result["customer"]["email_id"] == "a@example.com"
+	with pytest.raises(MappingError, match="email_id"):
+		mapping.customer_from_payload({"platform_user_id": "u", "customer_name": "A", "email_id": "nope"})
+
+
+def test_c5_disabled_or_missing_settings_are_retryable():
+	assert mapping.settings_problem({}) == "Commerce Connector Settings are missing"
+	assert mapping.settings_problem({"enabled": 0}) == "Commerce Connector is disabled"
+	assert mapping.settings_problem({"enabled": 1}) is None
+	assert ConfigError.http_status_code == 503
+	assert not issubclass(ConfigError, MappingError)
+
+
+def test_c7_return_sales_invoices_are_skipped():
+	assert mapping.should_send_event("Sales Invoice", is_return=0, grand_total=100.0)
+	assert not mapping.should_send_event("Sales Invoice", is_return=1, grand_total=-100.0)
+	assert not mapping.should_send_event("Sales Invoice", is_return=0, grand_total=-0.01)
+	assert mapping.should_send_event("Delivery Note", is_return=0, grand_total=10)
+	assert mapping.should_send_event("Sales Invoice")
+	assert not mapping.should_send_event("Sales Order")

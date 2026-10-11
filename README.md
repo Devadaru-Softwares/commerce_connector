@@ -52,8 +52,15 @@ bench --site <site> migrate
 Each call is `POST {ERPNEXT_URL}/api/method/commerce_connector.api.<method>` with
 `Authorization: token <api_key>:<api_secret>` and `Content-Type: application/json`. Methods that take
 `payload` expect a body of `{"payload": {...}}`. The other methods take their arguments as top-level
-JSON keys. A response is `{"message": {...}}`. A contract violation returns HTTP 417 with
-`exc_type: "ValidationError"` and a readable message. Do not retry it until the data is fixed.
+JSON keys. A response is `{"message": {...}}`.
+
+Error responses:
+
+| HTTP | `exc_type` | Meaning | Platform action |
+| --- | --- | --- | --- |
+| 417 | `ValidationError` | The payload breaks the contract. | Do not retry until the data is fixed. |
+| 503 | `ConnectorUnavailable` | The connector is disabled, or a setting it needs is missing (an account or the default item group). | Retry later. |
+| 403 | `PermissionError` | The API user lacks the **Commerce Connector** role. | Fix the user. |
 
 ### Methods
 
@@ -82,7 +89,8 @@ Conventions:
   "weight_per_unit": "14.000",
   "weight_uom": "Kg",
   "gst_rate": "18",
-  "disabled": false
+  "gst_hsn_code": "69072100",
+  "platform_status": "live"
 }}
 ```
 
@@ -90,6 +98,12 @@ The Item is looked up by `platform_product_id`. If none is linked, an existing I
 `item_code` and no platform id is adopted. A later SKU change does not rename the Item. Items are created as non-stock,
 because stock stays on the platform. `item_code`, `item_group`, `stock_uom` and `is_stock_item` are
 set only on create. A missing UOM is created.
+
+- `gst_hsn_code` is optional. It must be 4, 6 or 8 digits and is set on the India Compliance field
+  `Item.gst_hsn_code`. A missing GST HSN Code record is created.
+- `platform_status` is `draft`, `live` or `archived`, and defaults to `live`. It is stored in
+  `Item.platform_status`. Items are **never disabled** in ERPNext, because a disabled Item blocks
+  Sales Orders. A `disabled` flag in the payload is ignored.
 
 Returns `{"name", "doctype", "docstatus", "created", "item_code"}`.
 
@@ -100,6 +114,7 @@ Returns `{"name", "doctype", "docstatus", "created", "item_code"}`.
   "platform_user_id": "0b7e…",
   "customer_name": "Anu Joseph",
   "phone": "+919800000000",
+  "email_id": "anu@example.com",
   "gstin": "32ABCDE1234F1Z5",
   "addresses": [
     {"address_type": "Billing", "line1": "1 MG Road", "line2": null, "city": "Kochi",
@@ -140,22 +155,25 @@ The platform sends one call per dealer part.
 ```
 
 Rules:
-- `supply_type` is `intra` (CGST and SGST rows) or `inter` (one IGST row). Tax rows may be empty only
-  when `tax_total` is `"0.00"`.
+- `supply_type` is `intra` (CGST and SGST rows) or `inter` (IGST rows). Every tax row needs a `rate`.
+  Rows are unique by (type, rate), so a part that mixes slabs sends, for example, CGST 9, SGST 9,
+  CGST 6 and SGST 6, or IGST 18 and IGST 12. For intra supply, CGST and SGST must have the same set
+  of rates. Tax rows may be empty only when `tax_total` is `"0.00"`.
 - Platform prices include GST, so the ex-GST line `amount` (exact, 2 decimals) is not always
   `qty ×` a 2-decimal rate. A line is accepted when `round(rate × qty, 2)` (half up) equals `amount`.
   For example, qty `3` and amount `"1000.00"` give rate `"333.333333"`.
-- Lines are matched to Items by `items[].platform_product_id`, never by SKU. `sku` and `item_name`
-  are frozen at order time. They are optional and only go into the line description, as
-  `"{item_name} (SKU {sku})"`.
+- Lines are matched to Items by `items[].platform_product_id`, never by SKU. `sku` (falling back to
+  `item_code`) and `item_name` are frozen at order time. They are optional and only go into the line
+  description, as `"{item_name} (SKU {sku})"`.
 - `items[].weight_kg` is the line's total weight.
 - The amounts must sum exactly: lines to `net_total`, taxes to `tax_total`, `net_total + tax_total`
   to `grand_total`, and line weights to `total_weight_kg`.
 - `delivery_date`, `place_of_supply`, `dealer_gstin` and `items[].uom` are optional.
 - The customer and every line's product must already be synced.
 
-The Sales Order is inserted with `ignore_pricing_rule` and `disable_rounded_total` set. Tax rows use
-charge type **Actual** with the payload amounts. The order is then submitted. Net total, tax total and
+The Sales Order is inserted with `ignore_pricing_rule` and `disable_rounded_total` set. Each tax row
+becomes one ERPNext row with charge type **Actual**, the payload amount and its own description,
+e.g. `"CGST 9%"`. The order is then submitted. Net total, tax total and
 grand total are checked against the payload with zero tolerance, both before and after submit. On a
 mismatch, everything rolls back and a ValidationError names the part and both values.
 
@@ -232,6 +250,7 @@ X-Commerce-Signature: <lowercase hex HMAC-SHA256 of the raw body, keyed with Web
 
 - `event` is `sales_invoice.submitted` or `delivery_note.submitted`. `grand_total` is sent only for
   Sales Invoices.
+- Return Sales Invoices (credit notes, `is_return` set or `grand_total < 0`) are not sent.
 - `event_id` is a UUID derived from the event, document and part. A redelivery carries the same id.
 - The body is compact JSON with sorted keys. The signature covers the exact bytes sent, so verify it
   over the raw body before parsing.
@@ -248,7 +267,7 @@ X-Commerce-Signature: <lowercase hex HMAC-SHA256 of the raw body, keyed with Web
 
 | DocType | Fields |
 | --- | --- |
-| Item | `platform_product_id`, `platform_gst_rate` |
+| Item | `platform_product_id`, `platform_gst_rate`, `platform_status` |
 | Customer | `platform_user_id` |
 | Sales Order | `platform_order_id`, `platform_part_id`, `platform_order_number`, `platform_dealer_id`, `dealer_name`, `dealer_gstin`, `total_weight_kg`, `platform_status`, `dealer_invoice_no`, `dealer_invoice_date` |
 | Sales Order Item | `weight_kg` |
