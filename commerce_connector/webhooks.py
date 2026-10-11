@@ -67,9 +67,11 @@ def deliver(event: dict):
 	if not settings.enabled or not url or not secret:
 		return
 
-	body, headers = signing.build_request(secret, event)
+	body = signing.encode_body(event)
 	last_error = None
 	for attempt in range(MAX_ATTEMPTS):
+		# Fresh timestamp per attempt: the platform rejects events more than 5 minutes off.
+		headers = signing.signed_headers(secret, body, event["event_id"], int(time.time()))
 		try:
 			response = requests.post(url, data=body, headers=headers, timeout=TIMEOUT_SECONDS)
 			if response.status_code < 300:

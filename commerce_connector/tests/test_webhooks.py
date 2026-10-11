@@ -30,5 +30,6 @@ class TestWebhookDelivery(TestCase):
 		self.assertEqual(args[0], "https://platform.invalid/v1/webhooks/erpnext")
 		body = kwargs["data"]
 		headers = kwargs["headers"]
-		self.assertTrue(signing.verify("test-secret", body, headers[signing.SIGNATURE_HEADER]))
+		ts = headers[signing.TIMESTAMP_HEADER]
+		self.assertEqual(signing.sign_timestamped("test-secret", ts, body), headers[signing.SIGNATURE_HEADER])
 		self.assertEqual(headers[signing.EVENT_ID_HEADER], "e-1")

@@ -239,7 +239,8 @@ has a `platform_part_id`, a background job sends:
 POST <Platform Webhook URL>
 Content-Type: application/json
 X-Commerce-Event-Id: <event_id>
-X-Commerce-Signature: <lowercase hex HMAC-SHA256 of the raw body, keyed with Webhook Secret>
+X-Commerce-Timestamp: <unix seconds>
+X-Commerce-Signature: <lowercase hex HMAC-SHA256 of "{timestamp}.{raw body}", keyed with Webhook Secret>
 ```
 
 ```json
@@ -252,16 +253,20 @@ X-Commerce-Signature: <lowercase hex HMAC-SHA256 of the raw body, keyed with Web
   Sales Invoices.
 - Return Sales Invoices (credit notes, `is_return` set or `grand_total < 0`) are not sent.
 - `event_id` is a UUID derived from the event, document and part. A redelivery carries the same id.
-- The body is compact JSON with sorted keys. The signature covers the exact bytes sent, so verify it
-  over the raw body before parsing.
+- The body is compact JSON with sorted keys. The signature covers the timestamp, a `.` and then the
+  exact body bytes sent, so verify it over the raw body before parsing.
+- `X-Commerce-Timestamp` is always sent and is fresh on every attempt. The platform rejects events
+  whose timestamp is more than 5 minutes off. The platform still accepts the older body-only signature
+  when the timestamp header is absent, but this app no longer sends it.
 - The job makes 3 attempts, with a 15 s timeout each. A failure is written to the Error Log with the
   event id only.
 
-**Signing test vector** (shared with the platform's verifier test):
+**Signing test vectors** (shared with the platform's verifier test):
 
-| secret | raw body | X-Commerce-Signature |
-| --- | --- | --- |
-| `s` | `{"a":1}` | `37beaf650f70b40ec9706929c2e9d835cbd63729988f48781e6383a147215f07` |
+| secret | X-Commerce-Timestamp | raw body | signed message | X-Commerce-Signature |
+| --- | --- | --- | --- | --- |
+| `s` | `1700000000` | `{"a":1}` | `1700000000.{"a":1}` | `ab7bd212df57f3ef4ea3c17d4a1a71d8981ef595d4cd699b62517c68d89192a2` |
+| `s` | none (body only) | `{"a":1}` | `{"a":1}` | `37beaf650f70b40ec9706929c2e9d835cbd63729988f48781e6383a147215f07` |
 
 ### Custom fields (fixtures)
 
