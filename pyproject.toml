@@ -1,14 +1,15 @@
 [project]
 name = "commerce_connector"
 authors = [
-    { name = "sammish", email = "sammish.thundiyil@gmail.com"}
+    { name = "Devadaru Softwares", email = "sammish.thundiyil@gmail.com"}
 ]
-description = "commerce_connector"
-requires-python = ">=3.10"
+description = "Commerce platform to ERPNext connector"
+license = { text = "Proprietary – Devadaru Softwares" }
+requires-python = ">=3.12"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
-    # "frappe~=15.0.0" # Installed and managed by bench.
+    # frappe and erpnext (version-16) are installed and managed by bench.
 ]
 
 [build-system]
@@ -25,7 +26,7 @@ packages = []
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [
@@ -58,3 +59,7 @@ typing-modules = ["frappe.types.DF"]
 quote-style = "double"
 indent-style = "tab"
 docstring-code-format = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
